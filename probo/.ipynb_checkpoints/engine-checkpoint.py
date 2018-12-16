@@ -3,6 +3,7 @@ import enum
 import numpy as np
 from scipy.stats import binom
 from scipy.stats import norm
+from scipy.linalg import solve
 
 
 class PricingEngine(object, metaclass=abc.ABCMeta):
@@ -136,11 +137,37 @@ def NaiveMonteCarloPricer(engine, option, data):
     se = payoffT.std(ddof=1) / np.sqrt(replications)
 
     return (prc, se)
+    
+def AssetPaths(spot, mu, sigma, expiry, div, nreps, nsteps):
+    paths = np.empty((nreps, nsteps + 1))
+    h = expiry / nsteps
+    paths[:, 0] = spot
+    mudt = (mu - div - 0.5 * sigma * sigma) * h
+    sigmadt = sigma * np.sqrt(h)
+    
+    for t in range(1, nsteps + 1):
+        z = np.random.normal(size=nreps)
+        paths[:, t] = paths[:, t-1] * np.exp(mudt + sigmadt * z)
+
+    return paths
+
 
 def PathwiseNaiveMonteCarloPricer(engine, option, data):
-    ## You gotta put the code here!
-    ## See my AssetPaths function from class
-    pass
+    expiry = option.expiry
+    strike = option.strike
+    (spot, rate, vol, div) = data.get_data()
+    nstep = engine.time_steps
+    nrep = engine.replications
+    assetpaths = AssetPaths(spot, mu, sigma, expiry, div, nreps, nsteps)
+
+    for i in range(nrep):
+        callT = option.payoff(assetpaths[i])
+        callPrc = callT.mean()
+        callPrc *= np.exp(-r * T)
+    
+    stderr = callT() / np.sqrt(engine.replications)
+    
+    return callPrc, stderr
 
 def AntitheticMonteCarloPricer(engine, option, data):
     expiry = option.expiry
@@ -161,8 +188,33 @@ def AntitheticMonteCarloPricer(engine, option, data):
     return prc
 
 def ControlVariateAsianPrice(engine, option, data):
-    pass
-
+    expiry = option.expiry
+    strike = option.strike
+    (spot, rate, volatility, dividend) = data.get_data()
+    dt = expiry / engine.time_steps
+    nudt = (rate - dividend - 0.5 * volatility * volatility) * dt
+    sigsdt = volatility * np.sqrt(dt)
+    erddt = np.exp((rate - dividend) * dt)    
+    beta = -1.0
+    cash_flow_t = np.zeros((engine.replications, ))
+    cash_flow_k = np.zeros((engine.replications, ))
+    price = 0.0
+    
+    for j in range(engine.replications):
+        convar = 0.0
+        z = np.random.normal(size=int(engine.time_steps))
+        spot_t = spot
+        
+        for i in range(int(engine.time_steps)):
+            delta = BlackScholesDelta(spot, t, strike, expiry, volatility, rate, dividend)
+            convar = convar + delta * (spot_tn - spot_t * erddt)
+            cash_flow_t[i + 1] = spot[i] * (spot_t * np.exp(nudt + sigsdt * z[i])
+    
+    cash_flow_k[j] = option.payoff(cash_flow_t[i]) + beta * convar 
+    prices = np.exp(-rate * expiry) * cash_flow_l.mean()
+    stderr = cash_flow_t.std() / np.sqrt(engine.replications)
+                                            
+    return prices, stderr
     
 def ControlVariatePricer(engine, option, data):
     expiry = option.expiry
@@ -191,12 +243,59 @@ def ControlVariatePricer(engine, option, data):
         cash_flow_t[j] = option.payoff(spot_t) + beta * convar
 
     price = np.exp(-rate * expiry) * cash_flow_t.mean()
-    #stderr = cash_flow_t.std() / np.sqrt(engine.replications)
-    return price
+    stderr = cash_flow_t.std() / np.sqrt(engine.replications)
+    
+    return price, stderr
 
-#class BlackScholesPayoffType(enum.Enum):
-#    call = 1
-#    put = 2
+def fhandles(x):
+    n = x.shape[0]
+    return np.vstack((np.ones(n), x , x * x)).T
+
+def OLSBeta(x, y):
+    xpx = np.dot(x.T, x)
+    xpy = np.dot(x.T, y)
+    return solve(xpx, xpy)
+
+def lsmPricer(engine, option, data):
+    S = np.array([[1.0, 1.09, 1.08, 1.34],
+              [1.0, 1.16, 1.26, 1.54],
+              [1.0, 1.22, 1.07, 1.03],
+              [1.0, .93 , .97 , .92],
+              [1.0, 1.11, 1.56, 1.52],
+              [1.0, .76 , .77 , .90],
+              [1.0, .92 , .84 , 1.01],
+              [1.0, .88 , 1.22, 1.34]])
+
+    expiry = option.expiry
+    K = option.strike
+    (spot, r, vol, div) = data.get_data()
+    nreps = engine.replications
+    nsteps = engine.time_steps
+    dt = expiry / nsteps
+    df = np.exp(-r * dt)
+    CF = np.zeros(S.shape)
+    CF[:,-1] = option.payoff(S[:,-1])
+    callT = option.payoff(S[:,-1])
+
+    for j in range(nsteps-1,0,-1):
+        ii = (S[:,j] < K)
+        x = S[ii,j]
+        y = CF[ii,j+1] * df
+        z = fhandles(x)
+        bhat = OLSBeta(z,y)
+        v = np.dot(z,bhat)
+        po = option.payoff(x)
+        jj = po < v
+        po[jj] = 0.0
+        CF[ii,j] = po
+        callT *= df
+        kk = CF[:,j] > 0.0
+        callT[kk] = CF[kk,j]
+
+    prc = callT.mean()
+    prc *= df
+
+    return prc
 
 class BlackScholesPricingEngine(PricingEngine):
     def __init__(self, payoff_type, pricer):

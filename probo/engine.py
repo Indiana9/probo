@@ -137,11 +137,37 @@ def NaiveMonteCarloPricer(engine, option, data):
     se = payoffT.std(ddof=1) / np.sqrt(replications)
 
     return (prc, se)
+    
+def AssetPaths(spot, mu, sigma, expiry, div, nreps, nsteps):
+    paths = np.empty((nreps, nsteps + 1))
+    h = expiry / nsteps
+    paths[:, 0] = spot
+    mudt = (mu - div - 0.5 * sigma * sigma) * h
+    sigmadt = sigma * np.sqrt(h)
+    
+    for t in range(1, nsteps + 1):
+        z = np.random.normal(size=nreps)
+        paths[:, t] = paths[:, t-1] * np.exp(mudt + sigmadt * z)
+
+    return paths
+
 
 def PathwiseNaiveMonteCarloPricer(engine, option, data):
-    ## You gotta put the code here!
-    ## See my AssetPaths function from class
-    pass
+    expiry = option.expiry
+    strike = option.strike
+    (spot, rate, vol, div) = data.get_data()
+    nstep = engine.time_steps
+    nrep = engine.replications
+    assetpaths = AssetPaths(spot, mu, sigma, expiry, div, nreps, nsteps)
+
+    for i in range(nrep):
+        callT = option.payoff(assetpaths[i])
+        callPrc = callT.mean()
+        callPrc *= np.exp(-r * T)
+    
+    stderr = callT() / np.sqrt(engine.replications)
+    
+    return callPrc, stderr
 
 def AntitheticMonteCarloPricer(engine, option, data):
     expiry = option.expiry
@@ -162,8 +188,33 @@ def AntitheticMonteCarloPricer(engine, option, data):
     return prc
 
 def ControlVariateAsianPrice(engine, option, data):
-    pass
-
+    expiry = option.expiry
+    strike = option.strike
+    (spot, rate, volatility, dividend) = data.get_data()
+    dt = expiry / engine.time_steps
+    nudt = (rate - dividend - 0.5 * volatility * volatility) * dt
+    sigsdt = volatility * np.sqrt(dt)
+    erddt = np.exp((rate - dividend) * dt)    
+    beta = -1.0
+    cash_flow_t = np.zeros((engine.replications, ))
+    cash_flow_k = np.zeros((engine.replications, ))
+    price = 0.0
+    
+    for j in range(engine.replications):
+        convar = 0.0
+        z = np.random.normal(size=int(engine.time_steps))
+        spot_t = spot
+        
+        for i in range(int(engine.time_steps)):
+            delta = BlackScholesDelta(spot, t, strike, expiry, volatility, rate, dividend)
+            convar = convar + delta * (spot_tn - spot_t * erddt)
+            cash_flow_t[i + 1] = spot[i] * (spot_t * np.exp(nudt + sigsdt * z[i])
+    
+    cash_flow_k[j] = option.payoff(cash_flow_t[i]) + beta * convar 
+    prices = np.exp(-rate * expiry) * cash_flow_l.mean()
+    stderr = cash_flow_t.std() / np.sqrt(engine.replications)
+                                            
+    return prices, stderr
     
 def ControlVariatePricer(engine, option, data):
     expiry = option.expiry
@@ -192,8 +243,9 @@ def ControlVariatePricer(engine, option, data):
         cash_flow_t[j] = option.payoff(spot_t) + beta * convar
 
     price = np.exp(-rate * expiry) * cash_flow_t.mean()
-    #stderr = cash_flow_t.std() / np.sqrt(engine.replications)
-    return price
+    stderr = cash_flow_t.std() / np.sqrt(engine.replications)
+    
+    return price, stderr
 
 def fhandles(x):
     n = x.shape[0]
